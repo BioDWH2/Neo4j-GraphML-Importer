@@ -129,7 +129,7 @@ public class Neo4jGraphImporter {
         final Map<String, PropertyKey> propertyKeyNameMap = new HashMap<>();
         handleAllElementsInXMLWithTag(inputFile, "key", (reader, startElement) -> {
             final PropertyKey property = getPropertyKeyFromElement(startElement);
-            propertyKeyNameMap.put(property.id, property);
+            propertyKeyNameMap.put(property.forType + "|" + property.id, property);
         });
         final Set<String> uniqueNodeLabels = new HashSet<>();
         handleAllElementsInXMLWithTag(inputFile, "node", (reader, startElement) -> uniqueNodeLabels
@@ -233,21 +233,32 @@ public class Neo4jGraphImporter {
         Node result = new Node();
         result.id = getElementAttribute(element, "id");
         result.labels = getElementAttribute(element, "labels");
-        result.properties = collectNodeOrEdgeProperties(reader, propertyKeyNameMap);
+        result.properties = collectNodeOrEdgeProperties(reader, propertyKeyNameMap, "node");
         return result;
     }
 
     private Map<String, Object> collectNodeOrEdgeProperties(final XMLEventReader reader,
-                                                            final Map<String, PropertyKey> propertyKeyNameMap) {
+                                                            final Map<String, PropertyKey> propertyKeyNameMap,
+                                                            final String forType) {
         final Map<String, Object> properties = new HashMap<>();
         while (reader.hasNext()) {
             final XMLEvent nextEvent = tryNextEvent(reader);
             if (nextEvent != null && nextEvent.isStartElement()) {
                 final StartElement startChildElement = nextEvent.asStartElement();
                 final String propertyKey = getElementAttribute(startChildElement, "key");
-                final String propertyName = propertyKeyNameMap.get(propertyKey).attributeName;
+                final String forTypePropertyKey = forType + "|" + propertyKey;
+                if (!propertyKeyNameMap.containsKey(forTypePropertyKey)) {
+                    final PropertyKey property = new PropertyKey(propertyKey, forType, propertyKey, "string",
+                                                                 "labels".equals(propertyKey) ? "string" : null);
+                    if (LOGGER.isInfoEnabled())
+                        LOGGER.warn(forType + " property '" + propertyKey +
+                                    "' wasn't defined, fallback to string property");
+                    propertyKeyNameMap.put(forTypePropertyKey, property);
+                }
+                final PropertyKey property = propertyKeyNameMap.get(forTypePropertyKey);
+                final String propertyName = property.attributeName;
                 if (!propertyName.equals("labels") && !propertyName.equals("label"))
-                    properties.put(propertyName, parsePropertyValue(propertyKeyNameMap.get(propertyKey), reader));
+                    properties.put(propertyName, parsePropertyValue(property, reader));
             } else if (nextEvent != null && nextEvent.isEndElement()) {
                 final String tagName = nextEvent.asEndElement().getName().getLocalPart();
                 if (tagName.equalsIgnoreCase("node") || tagName.equalsIgnoreCase("edge"))
@@ -351,7 +362,7 @@ public class Neo4jGraphImporter {
         result.label = getElementAttribute(element, "label");
         result.source = getElementAttribute(element, "source");
         result.target = getElementAttribute(element, "target");
-        result.properties = collectNodeOrEdgeProperties(reader, propertyKeyNameMap);
+        result.properties = collectNodeOrEdgeProperties(reader, propertyKeyNameMap, "edge");
         return result;
     }
 

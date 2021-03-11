@@ -6,7 +6,7 @@
 
     <groupId>de.unibi.agbi.biodwh2</groupId>
     <artifactId>neo4j-graphml-importer</artifactId>
-    <version>1.0.0</version>
+    <version>1.0.1</version>
 
     <build>
         <finalName>Neo4j-GraphML-Importer-v${project.version}</finalName>

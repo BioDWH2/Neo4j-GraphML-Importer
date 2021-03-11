@@ -9,7 +9,7 @@ This repository contains the **Neo4j-GraphML-Importer** utility for importing Gr
 The latest release version of **Neo4j-GraphML-Importer** can be downloaded [here](https://github.com/BioDWH2/Neo4j-GraphML-Importer/releases/latest).
 
 ## Usage
-Neo4j-GraphML-Importer requires the Java Runtime Environment version 8. The JRE 8 is available [here](https://www.oracle.com/java/technologies/javase-jre8-downloads.html).
+Neo4j-GraphML-Importer requires the Java Runtime Environment version 8 or higher. The JRE 8 is available [here](https://www.oracle.com/java/technologies/javase-jre8-downloads.html).
 
 Importing a GraphML file into Neo4j is done using the following command.
 ~~~BASH

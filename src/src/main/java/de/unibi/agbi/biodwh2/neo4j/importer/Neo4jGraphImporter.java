@@ -248,12 +248,11 @@ public class Neo4jGraphImporter {
                 final String propertyKey = getElementAttribute(startChildElement, "key");
                 final String forTypePropertyKey = forType + "|" + propertyKey;
                 if (!propertyKeyNameMap.containsKey(forTypePropertyKey)) {
-                    final PropertyKey property = new PropertyKey(propertyKey, forType, propertyKey, "string",
-                                                                 "labels".equals(propertyKey) ? "string" : null);
+                    final PropertyKey property = new PropertyKey(propertyKey, forType, propertyKey, "string", null);
+                    propertyKeyNameMap.put(forTypePropertyKey, property);
                     if (LOGGER.isInfoEnabled())
                         LOGGER.warn(forType + " property '" + propertyKey +
                                     "' wasn't defined, fallback to string property");
-                    propertyKeyNameMap.put(forTypePropertyKey, property);
                 }
                 final PropertyKey property = propertyKeyNameMap.get(forTypePropertyKey);
                 final String propertyName = property.attributeName;

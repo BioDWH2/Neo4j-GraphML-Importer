@@ -26,11 +26,12 @@ If authentication is disabled, the username and password parameters can be ignor
 Usage: Neo4j-GraphML-Importer.jar [-h] [-e=<endpoint>] [-i=<graphMLFilePath>]
                                   [--password=<password>]
                                   [--username=<username>]
-  -e, --endpoint=<endpoint>       Endpoint of a running Neo4j instance
   -h, --help                      print this message
+  -e, --endpoint=<endpoint>       Endpoint of a running Neo4j instance
   -i, --input=<graphMLFilePath>   Path to the GraphML file
       --password=<password>       Neo4j password
       --username=<username>       Neo4j username
+      --label-prefix=<prefix>     Prefix added to all node and edge labels
 ~~~
 
 ## GraphML format

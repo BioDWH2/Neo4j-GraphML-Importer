@@ -53,7 +53,8 @@ public class Neo4jGraphImporter {
     private void run(final CmdArgs commandLine) {
         checkForUpdate();
         if (StringUtils.isNotEmpty(commandLine.inputFilePath) && StringUtils.isNotEmpty(commandLine.endpoint))
-            importGraphML(commandLine.inputFilePath, commandLine.endpoint, commandLine.username, commandLine.password);
+            importGraphML(commandLine.inputFilePath, commandLine.endpoint, commandLine.username, commandLine.password,
+                          commandLine.labelPrefix);
         else {
             LOGGER.error("Input and endpoint arguments must be specified");
             printHelp(commandLine);
@@ -115,7 +116,7 @@ public class Neo4jGraphImporter {
     }
 
     private void importGraphML(final String inputFilePath, final String endpoint, final String username,
-                               final String password) {
+                               final String password, final String labelPrefix) {
         if (!Paths.get(inputFilePath).toFile().exists()) {
             LOGGER.error("Input file '" + inputFilePath + "' not found");
             return;
@@ -133,10 +134,10 @@ public class Neo4jGraphImporter {
         });
         final Set<String> uniqueNodeLabels = new HashSet<>();
         handleAllElementsInXMLWithTag(inputFile, "node", (reader, startElement) -> uniqueNodeLabels
-                .add(getElementAttribute(startElement, "labels")));
+                .add(prefixLabels(getElementAttribute(startElement, "labels"), labelPrefix)));
         final Set<String> uniqueEdgeLabels = new HashSet<>();
         handleAllElementsInXMLWithTag(inputFile, "edge", (reader, startElement) -> uniqueEdgeLabels
-                .add(getElementAttribute(startElement, "label")));
+                .add(prefixLabels(getElementAttribute(startElement, "label"), labelPrefix)));
         try (final Driver driver = GraphDatabase.driver(endpoint, getAuthToken(username, password))) {
             try (final Session session = driver.session()) {
                 final Map<String, Long> nodeIdNeo4jIdMap = new HashMap<>();
@@ -145,10 +146,10 @@ public class Neo4jGraphImporter {
                     final Transaction tx = session.beginTransaction();
                     List<Node> nodes = new ArrayList<>();
                     handleAllElementsInXMLWithTag(inputFile, "node", (reader, startElement) -> {
-                        final String labels = getElementAttribute(startElement, "labels");
+                        final String labels = prefixLabels(getElementAttribute(startElement, "labels"), labelPrefix);
                         if (!label.equals(labels))
                             return;
-                        nodes.add(parseNode(reader, startElement, propertyKeyNameMap));
+                        nodes.add(parseNode(reader, startElement, propertyKeyNameMap, labelPrefix));
                         final long currentCount = counter.incrementAndGet();
                         if (nodes.size() >= BATCH_SIZE) {
                             LOGGER.info("Batch create nodes progress: " + currentCount + "/" + nodeCount.get());
@@ -165,10 +166,10 @@ public class Neo4jGraphImporter {
                     final Transaction tx = session.beginTransaction();
                     List<Edge> edges = new ArrayList<>();
                     handleAllElementsInXMLWithTag(inputFile, "edge", (reader, startElement) -> {
-                        final String edgeLabel = getElementAttribute(startElement, "label");
+                        final String edgeLabel = prefixLabels(getElementAttribute(startElement, "label"), labelPrefix);
                         if (!label.equals(edgeLabel))
                             return;
-                        edges.add(parseEdge(reader, startElement, propertyKeyNameMap));
+                        edges.add(parseEdge(reader, startElement, propertyKeyNameMap, labelPrefix));
                         final long currentCount = counter.incrementAndGet();
                         if (edges.size() >= BATCH_SIZE) {
                             LOGGER.info("Batch create edges progress: " + currentCount + "/" + edgeCount.get());
@@ -229,12 +230,20 @@ public class Neo4jGraphImporter {
     }
 
     private Node parseNode(final XMLEventReader reader, final StartElement element,
-                           final Map<String, PropertyKey> propertyKeyNameMap) {
+                           final Map<String, PropertyKey> propertyKeyNameMap, final String labelPrefix) {
         Node result = new Node();
         result.id = getElementAttribute(element, "id");
-        result.labels = getElementAttribute(element, "labels");
+        result.labels = prefixLabels(getElementAttribute(element, "labels"), labelPrefix);
         result.properties = collectNodeOrEdgeProperties(reader, propertyKeyNameMap, "node");
         return result;
+    }
+
+    private String prefixLabels(String labels, final String prefix) {
+        if (prefix == null || labels.length() == 0)
+            return labels;
+        final String[] parts = StringUtils.split(labels, ':');
+        final String delimiterAndPrefix = ':' + prefix;
+        return delimiterAndPrefix + String.join(delimiterAndPrefix, parts);
     }
 
     private Map<String, Object> collectNodeOrEdgeProperties(final XMLEventReader reader,
@@ -356,16 +365,16 @@ public class Neo4jGraphImporter {
     }
 
     private Edge parseEdge(final XMLEventReader reader, final StartElement element,
-                           final Map<String, PropertyKey> propertyKeyNameMap) {
+                           final Map<String, PropertyKey> propertyKeyNameMap, final String labelPrefix) {
         Edge result = new Edge();
-        result.label = getElementAttribute(element, "label");
+        result.label = prefixLabels(getElementAttribute(element, "label"), labelPrefix);
         result.source = getElementAttribute(element, "source");
         result.target = getElementAttribute(element, "target");
         result.properties = collectNodeOrEdgeProperties(reader, propertyKeyNameMap, "edge");
         return result;
     }
 
-    private void runCreateEdgeBatch(final Transaction tx, final List<Edge> edges, final String label,
+    private void runCreateEdgeBatch(final Transaction tx, final List<Edge> edges, String label,
                                     final Map<String, Long> nodeIdNeo4jIdMap) {
         final Map<String, Object> batch = new HashMap<>();
         final List<Map<String, Object>> batchList = new ArrayList<>();
@@ -377,6 +386,8 @@ public class Neo4jGraphImporter {
             nodeMap.put("properties", edge.properties);
             batchList.add(nodeMap);
         }
+        if (label.startsWith(":"))
+            label = label.substring(1);
         tx.run("UNWIND $batch as row\nMATCH (a),(b) WHERE id(a)=row.source AND id(b)=row.target\nCREATE (a)-[e:" +
                label + "]->(b)\nSET e += row.properties", batch);
     }

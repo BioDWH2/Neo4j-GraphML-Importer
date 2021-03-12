@@ -18,4 +18,8 @@ public class CmdArgs {
     public String username;
     @CommandLine.Option(names = {"--password"}, arity = "1", paramLabel = "<password>", description = "Neo4j password")
     public String password;
+    @CommandLine.Option(names = {
+            "--label-prefix"
+    }, arity = "1", paramLabel = "<prefix>", description = "Prefix added to all node and edge labels")
+    public String labelPrefix;
 }

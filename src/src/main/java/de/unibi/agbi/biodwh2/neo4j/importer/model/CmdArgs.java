@@ -14,16 +14,24 @@ public class CmdArgs {
             "-e", "--endpoint"
     }, arity = "1", paramLabel = "<endpoint>", description = "Endpoint of a running Neo4j instance", order = 2)
     public String endpoint;
-    @CommandLine.Option(names = {"--username"}, arity = "1", paramLabel = "<username>", description = "Neo4j username", order = 3)
+    @CommandLine.Option(names = {
+            "--username"
+    }, arity = "1", paramLabel = "<username>", description = "Neo4j username", order = 3)
     public String username;
-    @CommandLine.Option(names = {"--password"}, arity = "1", paramLabel = "<password>", description = "Neo4j password", order = 4)
+    @CommandLine.Option(names = {
+            "--password"
+    }, arity = "1", paramLabel = "<password>", description = "Neo4j password", order = 4)
     public String password;
     @CommandLine.Option(names = {
             "--label-prefix"
     }, arity = "1", paramLabel = "<prefix>", description = "Prefix added to all node and edge labels", order = 5)
     public String labelPrefix;
     @CommandLine.Option(names = {
+            "--label-suffix"
+    }, arity = "1", paramLabel = "<suffix>", description = "Suffix added to all node and edge labels", order = 6)
+    public String labelSuffix;
+    @CommandLine.Option(names = {
             "--indices"
-    }, arity = "1", paramLabel = "<label1>.<property1>;<label2>.<property2>;...", description = "Create indices if not exist. Labels are not automatically prefixed!", order = 6)
+    }, arity = "1", paramLabel = "<label1>.<property1>;<label2>.<property2>;...", description = "Create indices if not exist. Prefix and suffix are not automatically added to these labels!", order = 7)
     public String indices;
 }

@@ -24,14 +24,17 @@ If authentication is disabled, the username and password parameters can be ignor
 ## Help
 ~~~
 Usage: Neo4j-GraphML-Importer.jar [-h] [-e=<endpoint>] [-i=<graphMLFilePath>]
-                                  [--password=<password>]
+                                  [--indices=<label1>.<property1>;<label2>.<property2>;...]
+                                  [--label-prefix=<prefix>] [--password=<password>]
                                   [--username=<username>]
   -h, --help                      print this message
-  -e, --endpoint=<endpoint>       Endpoint of a running Neo4j instance
   -i, --input=<graphMLFilePath>   Path to the GraphML file
-      --password=<password>       Neo4j password
+  -e, --endpoint=<endpoint>       Endpoint of a running Neo4j instance
       --username=<username>       Neo4j username
+      --password=<password>       Neo4j password
       --label-prefix=<prefix>     Prefix added to all node and edge labels
+      --indices=<label1>.<property1>;<label2>.<property2>;...
+               Create indices if not exist. Labels are not automatically prefixed!
 ~~~
 
 ## GraphML format

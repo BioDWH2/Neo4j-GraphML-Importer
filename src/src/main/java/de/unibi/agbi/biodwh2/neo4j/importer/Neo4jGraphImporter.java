@@ -9,6 +9,7 @@ import de.unibi.agbi.biodwh2.neo4j.importer.model.Version;
 import de.unibi.agbi.biodwh2.neo4j.importer.model.graphml.PropertyKey;
 import org.apache.commons.lang3.StringUtils;
 import org.neo4j.driver.*;
+import org.neo4j.driver.Record;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import picocli.CommandLine;
@@ -34,6 +35,7 @@ public class Neo4jGraphImporter {
     private static final Logger LOGGER = LoggerFactory.getLogger(Neo4jGraphImporter.class);
     private static final String RELEASE_URL = "https://api.github.com/repos/BioDWH2/Neo4j-GraphML-Importer/releases";
     private static final int BATCH_SIZE = 1000;
+    private static final Version NEW_INDEX_CREATION_NEO4J_VERSION = new Version(4, 1, 3);
 
     private Neo4jGraphImporter() {
     }
@@ -54,7 +56,7 @@ public class Neo4jGraphImporter {
         checkForUpdate();
         if (StringUtils.isNotEmpty(commandLine.inputFilePath) && StringUtils.isNotEmpty(commandLine.endpoint))
             importGraphML(commandLine.inputFilePath, commandLine.endpoint, commandLine.username, commandLine.password,
-                          commandLine.labelPrefix);
+                          commandLine.labelPrefix, parseIndices(commandLine.indices));
         else {
             LOGGER.error("Input and endpoint arguments must be specified");
             printHelp(commandLine);
@@ -111,12 +113,30 @@ public class Neo4jGraphImporter {
         return null;
     }
 
+    private Map<String, String> parseIndices(final String indicesInput) {
+        final Map<String, String> indices = new HashMap<>();
+        if (indicesInput != null) {
+            final String[] parts = StringUtils.split(indicesInput, ';');
+            for (final String part : parts) {
+                final String[] labelPropertyKeyParts = StringUtils.split(part, '.');
+                if (labelPropertyKeyParts.length == 2) {
+                    final String label = StringUtils.stripStart(labelPropertyKeyParts[0], ":");
+                    indices.put(label, labelPropertyKeyParts[1]);
+                } else {
+                    LOGGER.warn("Failed to parse index '" + part + "' will be ignored. Ensure the syntax " +
+                                "<label1>.<property1>;<label2>.<property2>;...");
+                }
+            }
+        }
+        return indices;
+    }
+
     private void printHelp(final CmdArgs commandLine) {
         CommandLine.usage(commandLine, System.out);
     }
 
     private void importGraphML(final String inputFilePath, final String endpoint, final String username,
-                               final String password, final String labelPrefix) {
+                               final String password, final String labelPrefix, final Map<String, String> indices) {
         if (!Paths.get(inputFilePath).toFile().exists()) {
             LOGGER.error("Input file '" + inputFilePath + "' not found");
             return;
@@ -140,47 +160,12 @@ public class Neo4jGraphImporter {
                 .add(prefixLabels(getElementAttribute(startElement, "label"), labelPrefix)));
         try (final Driver driver = GraphDatabase.driver(endpoint, getAuthToken(username, password))) {
             try (final Session session = driver.session()) {
-                final Map<String, Long> nodeIdNeo4jIdMap = new HashMap<>();
-                final AtomicLong counter = new AtomicLong();
-                for (final String label : uniqueNodeLabels) {
-                    final Transaction tx = session.beginTransaction();
-                    List<Node> nodes = new ArrayList<>();
-                    handleAllElementsInXMLWithTag(inputFile, "node", (reader, startElement) -> {
-                        final String labels = prefixLabels(getElementAttribute(startElement, "labels"), labelPrefix);
-                        if (!label.equals(labels))
-                            return;
-                        nodes.add(parseNode(reader, startElement, propertyKeyNameMap, labelPrefix));
-                        final long currentCount = counter.incrementAndGet();
-                        if (nodes.size() >= BATCH_SIZE) {
-                            LOGGER.info("Batch create nodes progress: " + currentCount + "/" + nodeCount.get());
-                            nodeIdNeo4jIdMap.putAll(runCreateNodeBatch(tx, nodes, label));
-                            nodes.clear();
-                        }
-                    });
-                    if (nodes.size() > 0)
-                        nodeIdNeo4jIdMap.putAll(runCreateNodeBatch(tx, nodes, label));
-                    tx.commit();
-                }
-                counter.set(0);
-                for (final String label : uniqueEdgeLabels) {
-                    final Transaction tx = session.beginTransaction();
-                    List<Edge> edges = new ArrayList<>();
-                    handleAllElementsInXMLWithTag(inputFile, "edge", (reader, startElement) -> {
-                        final String edgeLabel = prefixLabels(getElementAttribute(startElement, "label"), labelPrefix);
-                        if (!label.equals(edgeLabel))
-                            return;
-                        edges.add(parseEdge(reader, startElement, propertyKeyNameMap, labelPrefix));
-                        final long currentCount = counter.incrementAndGet();
-                        if (edges.size() >= BATCH_SIZE) {
-                            LOGGER.info("Batch create edges progress: " + currentCount + "/" + edgeCount.get());
-                            runCreateEdgeBatch(tx, edges, label, nodeIdNeo4jIdMap);
-                            edges.clear();
-                        }
-                    });
-                    if (edges.size() > 0)
-                        runCreateEdgeBatch(tx, edges, label, nodeIdNeo4jIdMap);
-                    tx.commit();
-                }
+                final Version neo4jVersion = getNeo4jKernelVersion(session);
+                final Map<String, Long> nodeIdNeo4jIdMap = importAllNodes(session, inputFile, uniqueNodeLabels,
+                                                                          labelPrefix, propertyKeyNameMap, nodeCount);
+                importAllEdges(session, inputFile, uniqueEdgeLabels, labelPrefix, propertyKeyNameMap, edgeCount,
+                               nodeIdNeo4jIdMap);
+                createIndices(neo4jVersion, session, indices);
             }
         }
     }
@@ -347,6 +332,47 @@ public class Neo4jGraphImporter {
         }
     }
 
+    private Version getNeo4jKernelVersion(final Session session) {
+        final Transaction tx = session.beginTransaction();
+        final Result result = tx.run(
+                "call dbms.components() yield versions, edition unwind versions as version return version, edition");
+        final Record record = result.single();
+        tx.commit();
+        final String version = record.get("version").asString();
+        final String edition = record.get("edition").asString();
+        if (LOGGER.isInfoEnabled())
+            LOGGER.info("Detected Neo4j database version " + version + " (" + edition + ")");
+        return Version.tryParse(version);
+    }
+
+    private Map<String, Long> importAllNodes(final Session session, final Path inputFile,
+                                             final Set<String> uniqueNodeLabels, final String labelPrefix,
+                                             final Map<String, PropertyKey> propertyKeyNameMap,
+                                             final AtomicLong nodeCount) {
+        final Map<String, Long> nodeIdNeo4jIdMap = new HashMap<>();
+        final AtomicLong counter = new AtomicLong();
+        for (final String label : uniqueNodeLabels) {
+            final Transaction tx = session.beginTransaction();
+            List<Node> nodes = new ArrayList<>();
+            handleAllElementsInXMLWithTag(inputFile, "node", (reader, startElement) -> {
+                final String labels = prefixLabels(getElementAttribute(startElement, "labels"), labelPrefix);
+                if (!label.equals(labels))
+                    return;
+                nodes.add(parseNode(reader, startElement, propertyKeyNameMap, labelPrefix));
+                final long currentCount = counter.incrementAndGet();
+                if (nodes.size() >= BATCH_SIZE) {
+                    LOGGER.info("Batch create nodes progress: " + currentCount + "/" + nodeCount.get());
+                    nodeIdNeo4jIdMap.putAll(runCreateNodeBatch(tx, nodes, label));
+                    nodes.clear();
+                }
+            });
+            if (nodes.size() > 0)
+                nodeIdNeo4jIdMap.putAll(runCreateNodeBatch(tx, nodes, label));
+            tx.commit();
+        }
+        return nodeIdNeo4jIdMap;
+    }
+
     private Map<String, Long> runCreateNodeBatch(final Transaction tx, final List<Node> nodes, final String labels) {
         final Map<String, Object> batch = new HashMap<>();
         final List<Map<String, Object>> batchList = new ArrayList<>();
@@ -362,6 +388,31 @@ public class Neo4jGraphImporter {
                 "UNWIND $batch as row\nCREATE (n" + labels + ")\nSET n += row.properties\nRETURN row.id, id(n)", batch);
         result.stream().forEach(r -> nodeIdNeo4jIdMap.put(r.get(0).asString(), r.get(1).asLong()));
         return nodeIdNeo4jIdMap;
+    }
+
+    private void importAllEdges(final Session session, final Path inputFile, final Set<String> uniqueEdgeLabels,
+                                final String labelPrefix, final Map<String, PropertyKey> propertyKeyNameMap,
+                                final AtomicLong edgeCount, final Map<String, Long> nodeIdNeo4jIdMap) {
+        final AtomicLong counter = new AtomicLong();
+        for (final String label : uniqueEdgeLabels) {
+            final Transaction tx = session.beginTransaction();
+            List<Edge> edges = new ArrayList<>();
+            handleAllElementsInXMLWithTag(inputFile, "edge", (reader, startElement) -> {
+                final String edgeLabel = prefixLabels(getElementAttribute(startElement, "label"), labelPrefix);
+                if (!label.equals(edgeLabel))
+                    return;
+                edges.add(parseEdge(reader, startElement, propertyKeyNameMap, labelPrefix));
+                final long currentCount = counter.incrementAndGet();
+                if (edges.size() >= BATCH_SIZE) {
+                    LOGGER.info("Batch create edges progress: " + currentCount + "/" + edgeCount.get());
+                    runCreateEdgeBatch(tx, edges, label, nodeIdNeo4jIdMap);
+                    edges.clear();
+                }
+            });
+            if (edges.size() > 0)
+                runCreateEdgeBatch(tx, edges, label, nodeIdNeo4jIdMap);
+            tx.commit();
+        }
     }
 
     private Edge parseEdge(final XMLEventReader reader, final StartElement element,
@@ -390,6 +441,22 @@ public class Neo4jGraphImporter {
             label = label.substring(1);
         tx.run("UNWIND $batch as row\nMATCH (a),(b) WHERE id(a)=row.source AND id(b)=row.target\nCREATE (a)-[e:" +
                label + "]->(b)\nSET e += row.properties", batch);
+    }
+
+    private void createIndices(final Version neo4jVersion, final Session session, final Map<String, String> indices) {
+        final Transaction tx = session.beginTransaction();
+        final boolean useNewIndexCreation = neo4jVersion != null && neo4jVersion.compareTo(
+                NEW_INDEX_CREATION_NEO4J_VERSION) >= 0;
+        for (final String label : indices.keySet()) {
+            final String propertyKey = indices.get(label);
+            if (LOGGER.isInfoEnabled())
+                LOGGER.info("Create index on label '" + label + "' and property '" + propertyKey + "'");
+            if (useNewIndexCreation)
+                tx.run("CREATE INDEX IF NOT EXISTS FOR (t:" + label + ") ON (t." + propertyKey + ")");
+            else
+                tx.run("CREATE INDEX ON :" + label + " (" + propertyKey + ")");
+        }
+        tx.commit();
     }
 
     private interface Callback<T, U> {

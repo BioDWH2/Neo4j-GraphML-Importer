@@ -9,7 +9,6 @@ import de.unibi.agbi.biodwh2.neo4j.importer.model.Version;
 import de.unibi.agbi.biodwh2.neo4j.importer.model.graphml.PropertyKey;
 import org.apache.commons.lang3.StringUtils;
 import org.neo4j.driver.*;
-import org.neo4j.driver.Record;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import picocli.CommandLine;
@@ -28,6 +27,7 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.jar.Manifest;
 import java.util.stream.Collectors;
 
@@ -36,6 +36,7 @@ public class Neo4jGraphImporter {
     private static final String RELEASE_URL = "https://api.github.com/repos/BioDWH2/Neo4j-GraphML-Importer/releases";
     private static final int BATCH_SIZE = 1000;
     private static final Version NEW_INDEX_CREATION_NEO4J_VERSION = new Version(4, 1, 3);
+    private static final long TRANSACTION_SIZE = 20000;
 
     private Neo4jGraphImporter() {
     }
@@ -143,6 +144,8 @@ public class Neo4jGraphImporter {
             return;
         }
         final Path inputFile = Paths.get(inputFilePath);
+        if (LOGGER.isInfoEnabled())
+            LOGGER.info("Parsing property definitions...");
         AtomicLong nodeCount = new AtomicLong();
         AtomicLong edgeCount = new AtomicLong();
         handleAllElementsInXMLWithTag(inputFile, "node", (reader, startElement) -> nodeCount.getAndIncrement());
@@ -153,20 +156,13 @@ public class Neo4jGraphImporter {
             final PropertyKey property = getPropertyKeyFromElement(startElement);
             propertyKeyNameMap.put(property.forType + "|" + property.id, property);
         });
-        final Set<String> uniqueNodeLabels = new HashSet<>();
-        handleAllElementsInXMLWithTag(inputFile, "node", (reader, startElement) -> uniqueNodeLabels
-                .add(modifyLabels(getElementAttribute(startElement, "labels"), labelPrefix, labelSuffix)));
-        final Set<String> uniqueEdgeLabels = new HashSet<>();
-        handleAllElementsInXMLWithTag(inputFile, "edge", (reader, startElement) -> uniqueEdgeLabels
-                .add(modifyLabels(getElementAttribute(startElement, "label"), labelPrefix, labelSuffix)));
         try (final Driver driver = GraphDatabase.driver(endpoint, getAuthToken(username, password))) {
             try (final Session session = driver.session()) {
                 final Version neo4jVersion = getNeo4jKernelVersion(session);
-                final Map<String, Long> nodeIdNeo4jIdMap = importAllNodes(session, inputFile, uniqueNodeLabels,
-                                                                          labelPrefix, labelSuffix, propertyKeyNameMap,
-                                                                          nodeCount);
-                importAllEdges(session, inputFile, uniqueEdgeLabels, labelPrefix, labelSuffix, propertyKeyNameMap,
-                               edgeCount, nodeIdNeo4jIdMap);
+                final Map<String, Long> nodeIdNeo4jIdMap = importAllNodes(session, inputFile, labelPrefix, labelSuffix,
+                                                                          propertyKeyNameMap, nodeCount);
+                importAllEdges(session, inputFile, labelPrefix, labelSuffix, propertyKeyNameMap, edgeCount,
+                               nodeIdNeo4jIdMap);
                 createIndices(neo4jVersion, session, indices);
             }
         }
@@ -358,33 +354,38 @@ public class Neo4jGraphImporter {
         return Version.tryParse(version);
     }
 
-    private Map<String, Long> importAllNodes(final Session session, final Path inputFile,
-                                             final Set<String> uniqueNodeLabels, final String labelPrefix,
+    private Map<String, Long> importAllNodes(final Session session, final Path inputFile, final String labelPrefix,
                                              final String labelSuffix,
                                              final Map<String, PropertyKey> propertyKeyNameMap,
                                              final AtomicLong nodeCount) {
+        final AtomicReference<Transaction> tx = new AtomicReference<>(session.beginTransaction());
         final Map<String, Long> nodeIdNeo4jIdMap = new HashMap<>();
         final AtomicLong counter = new AtomicLong();
-        for (final String label : uniqueNodeLabels) {
-            final Transaction tx = session.beginTransaction();
-            List<Node> nodes = new ArrayList<>();
-            handleAllElementsInXMLWithTag(inputFile, "node", (reader, startElement) -> {
-                final String labels = modifyLabels(getElementAttribute(startElement, "labels"), labelPrefix,
-                                                   labelSuffix);
-                if (!label.equals(labels))
-                    return;
-                nodes.add(parseNode(reader, startElement, propertyKeyNameMap, labelPrefix, labelSuffix));
-                final long currentCount = counter.incrementAndGet();
-                if (nodes.size() >= BATCH_SIZE) {
-                    LOGGER.info("Batch create nodes progress: " + currentCount + "/" + nodeCount.get());
-                    nodeIdNeo4jIdMap.putAll(runCreateNodeBatch(tx, nodes, label));
-                    nodes.clear();
-                }
-            });
-            if (nodes.size() > 0)
-                nodeIdNeo4jIdMap.putAll(runCreateNodeBatch(tx, nodes, label));
-            tx.commit();
+        final Map<String, List<Node>> perLabelBatches = new HashMap<>();
+        handleAllElementsInXMLWithTag(inputFile, "node", (reader, startElement) -> {
+            final String labels = modifyLabels(getElementAttribute(startElement, "labels"), labelPrefix, labelSuffix);
+            if (!perLabelBatches.containsKey(labels))
+                perLabelBatches.put(labels, new ArrayList<>());
+            final List<Node> batch = perLabelBatches.get(labels);
+            batch.add(parseNode(reader, startElement, propertyKeyNameMap, labelPrefix, labelSuffix));
+            if (batch.size() >= BATCH_SIZE) {
+                nodeIdNeo4jIdMap.putAll(runCreateNodeBatch(tx.get(), batch, labels));
+                batch.clear();
+            }
+            final long currentCount = counter.incrementAndGet();
+            if (currentCount % 5000 == 0)
+                LOGGER.info("Nodes progress: " + currentCount + "/" + nodeCount.get());
+            if (currentCount % TRANSACTION_SIZE == 0) {
+                tx.get().commit();
+                tx.set(session.beginTransaction());
+            }
+        });
+        for (final String labels : perLabelBatches.keySet()) {
+            final List<Node> batch = perLabelBatches.get(labels);
+            if (batch.size() > 0)
+                nodeIdNeo4jIdMap.putAll(runCreateNodeBatch(tx.get(), batch, labels));
         }
+        tx.get().commit();
         return nodeIdNeo4jIdMap;
     }
 
@@ -405,31 +406,36 @@ public class Neo4jGraphImporter {
         return nodeIdNeo4jIdMap;
     }
 
-    private void importAllEdges(final Session session, final Path inputFile, final Set<String> uniqueEdgeLabels,
-                                final String labelPrefix, final String labelSuffix,
-                                final Map<String, PropertyKey> propertyKeyNameMap, final AtomicLong edgeCount,
-                                final Map<String, Long> nodeIdNeo4jIdMap) {
+    private void importAllEdges(final Session session, final Path inputFile, final String labelPrefix,
+                                final String labelSuffix, final Map<String, PropertyKey> propertyKeyNameMap,
+                                final AtomicLong edgeCount, final Map<String, Long> nodeIdNeo4jIdMap) {
+        final AtomicReference<Transaction> tx = new AtomicReference<>(session.beginTransaction());
         final AtomicLong counter = new AtomicLong();
-        for (final String label : uniqueEdgeLabels) {
-            final Transaction tx = session.beginTransaction();
-            List<Edge> edges = new ArrayList<>();
-            handleAllElementsInXMLWithTag(inputFile, "edge", (reader, startElement) -> {
-                final String edgeLabel = modifyLabels(getElementAttribute(startElement, "label"), labelPrefix,
-                                                      labelSuffix);
-                if (!label.equals(edgeLabel))
-                    return;
-                edges.add(parseEdge(reader, startElement, propertyKeyNameMap, labelPrefix, labelSuffix));
-                final long currentCount = counter.incrementAndGet();
-                if (edges.size() >= BATCH_SIZE) {
-                    LOGGER.info("Batch create edges progress: " + currentCount + "/" + edgeCount.get());
-                    runCreateEdgeBatch(tx, edges, label, nodeIdNeo4jIdMap);
-                    edges.clear();
-                }
-            });
-            if (edges.size() > 0)
-                runCreateEdgeBatch(tx, edges, label, nodeIdNeo4jIdMap);
-            tx.commit();
+        final Map<String, List<Edge>> perLabelBatches = new HashMap<>();
+        handleAllElementsInXMLWithTag(inputFile, "edge", (reader, startElement) -> {
+            final String edgeLabel = modifyLabels(getElementAttribute(startElement, "label"), labelPrefix, labelSuffix);
+            if (!perLabelBatches.containsKey(edgeLabel))
+                perLabelBatches.put(edgeLabel, new ArrayList<>());
+            final List<Edge> batch = perLabelBatches.get(edgeLabel);
+            batch.add(parseEdge(reader, startElement, propertyKeyNameMap, labelPrefix, labelSuffix));
+            if (batch.size() >= BATCH_SIZE) {
+                runCreateEdgeBatch(tx.get(), batch, edgeLabel, nodeIdNeo4jIdMap);
+                batch.clear();
+            }
+            final long currentCount = counter.incrementAndGet();
+            if (currentCount % 5000 == 0)
+                LOGGER.info("Edges progress: " + currentCount + "/" + edgeCount.get());
+            if (currentCount % TRANSACTION_SIZE == 0) {
+                tx.get().commit();
+                tx.set(session.beginTransaction());
+            }
+        });
+        for (final String edgeLabel : perLabelBatches.keySet()) {
+            final List<Edge> batch = perLabelBatches.get(edgeLabel);
+            if (batch.size() > 0)
+                runCreateEdgeBatch(tx.get(), batch, edgeLabel, nodeIdNeo4jIdMap);
         }
+        tx.get().commit();
     }
 
     private Edge parseEdge(final XMLEventReader reader, final StartElement element,

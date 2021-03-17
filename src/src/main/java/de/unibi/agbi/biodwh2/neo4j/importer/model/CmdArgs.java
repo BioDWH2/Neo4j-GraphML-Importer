@@ -31,7 +31,15 @@ public class CmdArgs {
     }, arity = "1", paramLabel = "<suffix>", description = "Suffix added to all node and edge labels", order = 6)
     public String labelSuffix;
     @CommandLine.Option(names = {
+            "--modify-node-labels"
+    }, arity = "1", paramLabel = "<true|false>", defaultValue = "true", showDefaultValue = CommandLine.Help.Visibility.ALWAYS, description = "Flag if node labels should be modified with prefix and suffix", order = 7)
+    public String modifyNodeLabels;
+    @CommandLine.Option(names = {
+            "--modify-edge-labels"
+    }, arity = "1", paramLabel = "<true|false>", defaultValue = "true", showDefaultValue = CommandLine.Help.Visibility.ALWAYS, description = "Flag if edge labels should be modified with prefix and suffix", order = 8)
+    public String modifyEdgeLabels;
+    @CommandLine.Option(names = {
             "--indices"
-    }, arity = "1", paramLabel = "<label1>.<property1>;<label2>.<property2>;...", description = "Create indices if not exist. Prefix and suffix are not automatically added to these labels!", order = 7)
+    }, arity = "1", paramLabel = "<label1>.<property1>;<label2>.<property2>;...", description = "Create indices if not exist. Prefix and suffix are not automatically added to these labels!", order = 9)
     public String indices;
 }

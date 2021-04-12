@@ -9,6 +9,7 @@ import de.unibi.agbi.biodwh2.neo4j.importer.model.Version;
 import de.unibi.agbi.biodwh2.neo4j.importer.model.graphml.PropertyKey;
 import org.apache.commons.lang3.StringUtils;
 import org.neo4j.driver.*;
+import org.neo4j.driver.Record;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import picocli.CommandLine;
@@ -497,9 +498,11 @@ public class Neo4jGraphImporter {
 
     private void createIndices(final Version neo4jVersion, final Session session,
                                final Map<String, List<String>> indices) {
-        final Transaction tx = session.beginTransaction();
         final boolean useNewIndexCreation = neo4jVersion != null && neo4jVersion.compareTo(
                 NEW_INDEX_CREATION_NEO4J_VERSION) >= 0;
+        final Map<String, Set<String>> existingIndices = useNewIndexCreation ? new HashMap<>() : getExistingIndices(
+                session);
+        final Transaction tx = session.beginTransaction();
         for (final String label : indices.keySet()) {
             final List<String> propertyKeys = indices.get(label);
             for (final String propertyKey : propertyKeys) {
@@ -507,11 +510,33 @@ public class Neo4jGraphImporter {
                     LOGGER.info("Create index on label '" + label + "' and property '" + propertyKey + "'");
                 if (useNewIndexCreation)
                     tx.run("CREATE INDEX IF NOT EXISTS FOR (t:" + label + ") ON (t." + propertyKey + ")");
-                else
-                    tx.run("CREATE INDEX ON :" + label + " (" + propertyKey + ")");
+                else {
+                    if (!existingIndices.containsKey(label) || !existingIndices.get(label).contains(propertyKey))
+                        tx.run("CREATE INDEX ON :" + label + " (" + propertyKey + ")");
+                    else if (LOGGER.isInfoEnabled())
+                        LOGGER.info("Skipping index creation on :" + label + " (" + propertyKey +
+                                    ") because a similar index already exists");
+                }
             }
         }
         tx.commit();
+    }
+
+    private Map<String, Set<String>> getExistingIndices(final Session session) {
+        final Map<String, Set<String>> indices = new HashMap<>();
+        final Transaction tx = session.beginTransaction();
+        final List<Record> queryResult = tx.run("CALL db.indexes").list();
+        for (final Record index : queryResult) {
+            final List<String> labels = index.get("tokenNames").asList(Value::asString);
+            final List<String> propertyKeys = index.get("properties").asList(Value::asString);
+            if (labels.size() > 1 && LOGGER.isWarnEnabled())
+                LOGGER.warn("Found multiple labels for index " + index + ". Ignoring all but first label.");
+            if (!indices.containsKey(labels.get(0)))
+                indices.put(labels.get(0), new HashSet<>());
+            indices.get(labels.get(0)).addAll(propertyKeys);
+        }
+        tx.commit();
+        return indices;
     }
 
     private interface Callback<T, U> {

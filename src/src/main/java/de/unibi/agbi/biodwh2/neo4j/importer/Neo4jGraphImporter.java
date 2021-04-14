@@ -36,6 +36,7 @@ public class Neo4jGraphImporter {
     private static final Logger LOGGER = LoggerFactory.getLogger(Neo4jGraphImporter.class);
     private static final String RELEASE_URL = "https://api.github.com/repos/BioDWH2/Neo4j-GraphML-Importer/releases";
     private static final int BATCH_SIZE = 1000;
+    private static final Version NEO4J_4_VERSION = new Version(4, 0);
     private static final Version NEW_INDEX_CREATION_NEO4J_VERSION = new Version(4, 1, 3);
     private static final long TRANSACTION_SIZE = 20000;
 
@@ -501,7 +502,7 @@ public class Neo4jGraphImporter {
         final boolean useNewIndexCreation = neo4jVersion != null && neo4jVersion.compareTo(
                 NEW_INDEX_CREATION_NEO4J_VERSION) >= 0;
         final Map<String, Set<String>> existingIndices = useNewIndexCreation ? new HashMap<>() : getExistingIndices(
-                session);
+                neo4jVersion, session);
         final Transaction tx = session.beginTransaction();
         for (final String label : indices.keySet()) {
             final List<String> propertyKeys = indices.get(label);
@@ -522,12 +523,13 @@ public class Neo4jGraphImporter {
         tx.commit();
     }
 
-    private Map<String, Set<String>> getExistingIndices(final Session session) {
+    private Map<String, Set<String>> getExistingIndices(final Version neo4jVersion, final Session session) {
         final Map<String, Set<String>> indices = new HashMap<>();
         final Transaction tx = session.beginTransaction();
         final List<Record> queryResult = tx.run("CALL db.indexes").list();
         for (final Record index : queryResult) {
-            final List<String> labels = index.get("tokenNames").asList(Value::asString);
+            final String labelsKey = NEO4J_4_VERSION.compareTo(neo4jVersion) <= 0 ? "labelsOrTypes" : "tokenNames";
+            final List<String> labels = index.get(labelsKey).asList(Value::asString);
             final List<String> propertyKeys = index.get("properties").asList(Value::asString);
             if (labels.size() > 1 && LOGGER.isWarnEnabled())
                 LOGGER.warn("Found multiple labels for index " + index + ". Ignoring all but first label.");

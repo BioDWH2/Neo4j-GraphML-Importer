@@ -29,6 +29,7 @@ import java.nio.file.Paths;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Function;
 import java.util.jar.Manifest;
 import java.util.stream.Collectors;
 
@@ -49,8 +50,8 @@ public class Neo4jGraphImporter {
     }
 
     private static CmdArgs parseCommandLine(final String... args) {
-        final CmdArgs result = new CmdArgs();
-        final CommandLine cmd = new CommandLine(result);
+        final var result = new CmdArgs();
+        final var cmd = new CommandLine(result);
         cmd.parseArgs(args);
         return result;
     }
@@ -72,8 +73,8 @@ public class Neo4jGraphImporter {
         String mostRecentDownloadUrl = null;
         final ObjectMapper mapper = new ObjectMapper();
         try {
-            final URL releaseUrl = new URL(RELEASE_URL);
-            final List<GithubRelease> releases = mapper.readValue(releaseUrl, new TypeReference<List<GithubRelease>>() {
+            final var releaseUrl = new URL(RELEASE_URL);
+            final List<GithubRelease> releases = mapper.readValue(releaseUrl, new TypeReference<>() {
             });
             for (final GithubRelease release : releases) {
                 final Version version = Version.tryParse(release.tagName.replace("v", ""));
@@ -104,7 +105,7 @@ public class Neo4jGraphImporter {
             final Enumeration<URL> resources = getClass().getClassLoader().getResources("META-INF/MANIFEST.MF");
             while (resources.hasMoreElements()) {
                 try {
-                    final Manifest manifest = new Manifest(resources.nextElement().openStream());
+                    final var manifest = new Manifest(resources.nextElement().openStream());
                     final Version version = Version.tryParse(manifest.getMainAttributes().getValue("BioDWH2-version"));
                     if (version != null)
                         return version;
@@ -117,7 +118,7 @@ public class Neo4jGraphImporter {
     }
 
     private LabelOptions parseLabelOptions(final CmdArgs commandLine) {
-        final LabelOptions result = new LabelOptions();
+        final var result = new LabelOptions();
         final String modifyNodeLabelsSafe =
                 commandLine.modifyNodeLabels == null ? "" : commandLine.modifyNodeLabels.trim();
         final String modifyEdgeLabelsSafe =
@@ -132,7 +133,7 @@ public class Neo4jGraphImporter {
     }
 
     private Map<String, List<String>> parseIndices(final String indicesInput) {
-        final Map<String, List<String>> indices = new HashMap<>();
+        final var indices = new HashMap<String, List<String>>();
         if (indicesInput != null) {
             final String[] parts = StringUtils.split(indicesInput, ';');
             for (final String part : parts) {
@@ -165,15 +166,15 @@ public class Neo4jGraphImporter {
         }
         if (LOGGER.isInfoEnabled())
             LOGGER.info("Parsing property definitions...");
-        AtomicLong nodeCount = new AtomicLong();
-        AtomicLong edgeCount = new AtomicLong();
+        final var nodeCount = new AtomicLong();
+        final var edgeCount = new AtomicLong();
         handleAllElementsInXMLWithTag(inputFile, "node", (reader, startElement) -> nodeCount.getAndIncrement());
         handleAllElementsInXMLWithTag(inputFile, "edge", (reader, startElement) -> edgeCount.getAndIncrement());
         LOGGER.info(nodeCount.get() + " nodes, " + edgeCount.get() + " edges");
         final Map<String, PropertyKey> propertyKeyNameMap = new HashMap<>();
         handleAllElementsInXMLWithTag(inputFile, "key", (reader, startElement) -> {
             final PropertyKey property = getPropertyKeyFromElement(startElement);
-            propertyKeyNameMap.put(property.forType + "|" + property.id, property);
+            propertyKeyNameMap.put(property.forType() + "|" + property.id(), property);
         });
         try (final Driver driver = GraphDatabase.driver(endpoint, getAuthToken(username, password))) {
             try (final Session session = driver.session()) {
@@ -188,7 +189,7 @@ public class Neo4jGraphImporter {
 
     private void handleAllElementsInXMLWithTag(final Path inputFilePath, final String tagName,
                                                final Callback<XMLEventReader, StartElement> callback) {
-        try (final FileInputStream stream = new FileInputStream(inputFilePath.toFile())) {
+        try (final var stream = new FileInputStream(inputFilePath.toFile())) {
             final XMLEventReader reader = XMLInputFactory.newInstance().createXMLEventReader(stream);
             while (reader.hasNext()) {
                 final XMLEvent nextEvent = tryNextEvent(reader);
@@ -245,7 +246,7 @@ public class Neo4jGraphImporter {
         if (!labelOptions.modifyNodeLabels || labels == null || labels.length() == 0 || (!prefixUsed && !suffixUsed))
             return labels;
         final String[] parts = StringUtils.split(labels, ':');
-        final StringBuilder modifiedLabels = new StringBuilder();
+        final var modifiedLabels = new StringBuilder();
         for (final String part : parts) {
             modifiedLabels.append(':');
             if (prefixUsed)
@@ -260,7 +261,7 @@ public class Neo4jGraphImporter {
     private Map<String, Object> collectNodeOrEdgeProperties(final XMLEventReader reader,
                                                             final Map<String, PropertyKey> propertyKeyNameMap,
                                                             final String forType) {
-        final Map<String, Object> properties = new HashMap<>();
+        final var properties = new HashMap<String, Object>();
         while (reader.hasNext()) {
             final XMLEvent nextEvent = tryNextEvent(reader);
             if (nextEvent != null && nextEvent.isStartElement()) {
@@ -275,7 +276,7 @@ public class Neo4jGraphImporter {
                                     "' wasn't defined, fallback to string property");
                 }
                 final PropertyKey property = propertyKeyNameMap.get(forTypePropertyKey);
-                final String propertyName = property.attributeName;
+                final String propertyName = property.attributeName();
                 if (!propertyName.equals("labels") && !propertyName.equals("label"))
                     properties.put(propertyName, parsePropertyValue(property, reader));
             } else if (nextEvent != null && nextEvent.isEndElement()) {
@@ -291,62 +292,53 @@ public class Neo4jGraphImporter {
         String value = tryGetElementText(reader);
         if (value == null)
             return null;
-        if (type.attributeList != null) {
-            value = StringUtils.strip(value, "[] \t\n\r");
-            switch (type.attributeList.toLowerCase(Locale.US)) {
-                case "boolean":
-                    return Arrays.stream(StringUtils.split(value, ',')).map(x -> Boolean.valueOf(x.trim())).collect(
-                            Collectors.toList());
-                case "int":
-                    return Arrays.stream(StringUtils.split(value, ',')).map(x -> Integer.valueOf(x.trim())).collect(
-                            Collectors.toList());
-                case "long":
-                    return Arrays.stream(StringUtils.split(value, ',')).map(x -> Long.valueOf(x.trim())).collect(
-                            Collectors.toList());
-                case "float":
-                    return Arrays.stream(StringUtils.split(value, ',')).map(x -> Float.valueOf(x.trim())).collect(
-                            Collectors.toList());
-                case "double":
-                    return Arrays.stream(StringUtils.split(value, ',')).map(x -> Double.valueOf(x.trim())).collect(
-                            Collectors.toList());
-                case "string": {
-                    boolean insideString = false;
-                    int start = 0;
-                    int escapeCount = 0;
-                    List<String> parts = new ArrayList<>();
-                    for (int i = 0; i < value.length(); i++) {
-                        char currentChar = value.charAt(i);
-                        if (currentChar == '"') {
-                            if (insideString && escapeCount % 2 == 0) {
-                                parts.add(value.substring(start, i).replace("\\\"", "\""));
-                                insideString = false;
-                            } else if (!insideString) {
-                                insideString = true;
-                                start = i + 1;
-                            }
-                        }
-                        escapeCount = currentChar == '\\' ? escapeCount + 1 : 0;
-                    }
-                    return parts;
-                }
-            }
+        if (type.attributeList() != null) {
+            return parsePropertyListValue(type, value);
         } else {
-            switch (type.attributeType.toLowerCase(Locale.US)) {
-                case "boolean":
-                    return Boolean.valueOf(value);
-                case "int":
-                    return Integer.valueOf(value);
-                case "long":
-                    return Long.valueOf(value);
-                case "float":
-                    return Float.valueOf(value);
-                case "double":
-                    return Double.valueOf(value);
-                case "string":
-                    return value;
-            }
+            return switch (type.attributeType().toLowerCase(Locale.US)) {
+                case "boolean" -> Boolean.valueOf(value);
+                case "int" -> Integer.valueOf(value);
+                case "long" -> Long.valueOf(value);
+                case "float" -> Float.valueOf(value);
+                case "double" -> Double.valueOf(value);
+                default -> value;
+            };
         }
-        return value;
+    }
+
+    private Object parsePropertyListValue(final PropertyKey type, String value) {
+        value = StringUtils.strip(value, "[] \t\n\r");
+        return switch (type.attributeList().toLowerCase(Locale.US)) {
+            case "boolean" -> convertStringToTypeList(value, Boolean::valueOf);
+            case "int" -> convertStringToTypeList(value, Integer::valueOf);
+            case "long" -> convertStringToTypeList(value, Long::valueOf);
+            case "float" -> convertStringToTypeList(value, Float::valueOf);
+            case "double" -> convertStringToTypeList(value, Double::valueOf);
+            default -> {
+                boolean insideString = false;
+                int start = 0;
+                int escapeCount = 0;
+                List<String> parts = new ArrayList<>();
+                for (int i = 0; i < value.length(); i++) {
+                    char currentChar = value.charAt(i);
+                    if (currentChar == '"') {
+                        if (insideString && escapeCount % 2 == 0) {
+                            parts.add(value.substring(start, i).replace("\\\"", "\""));
+                            insideString = false;
+                        } else if (!insideString) {
+                            insideString = true;
+                            start = i + 1;
+                        }
+                    }
+                    escapeCount = currentChar == '\\' ? escapeCount + 1 : 0;
+                }
+                yield parts;
+            }
+        };
+    }
+
+    private <R> List<R> convertStringToTypeList(final String value, Function<String, R> mapper) {
+        return Arrays.stream(StringUtils.split(value, ',')).map(String::strip).map(mapper).collect(Collectors.toList());
     }
 
     private String tryGetElementText(final XMLEventReader reader) {
@@ -375,10 +367,10 @@ public class Neo4jGraphImporter {
                                              final LabelOptions labelOptions,
                                              final Map<String, PropertyKey> propertyKeyNameMap,
                                              final AtomicLong nodeCount) {
-        final AtomicReference<Transaction> tx = new AtomicReference<>(session.beginTransaction());
-        final Map<String, Long> nodeIdNeo4jIdMap = new HashMap<>();
-        final AtomicLong counter = new AtomicLong();
-        final Map<String, List<Node>> perLabelBatches = new HashMap<>();
+        final var tx = new AtomicReference<>(session.beginTransaction());
+        final var nodeIdNeo4jIdMap = new HashMap<String, Long>();
+        final var counter = new AtomicLong();
+        final var perLabelBatches = new HashMap<String, List<Node>>();
         handleAllElementsInXMLWithTag(inputFile, "node", (reader, startElement) -> {
             final String labels = modifyNodeLabels(getElementAttribute(startElement, "labels"), labelOptions);
             if (!perLabelBatches.containsKey(labels))
@@ -407,16 +399,16 @@ public class Neo4jGraphImporter {
     }
 
     private Map<String, Long> runCreateNodeBatch(final Transaction tx, final List<Node> nodes, final String labels) {
-        final Map<String, Object> batch = new HashMap<>();
-        final List<Map<String, Object>> batchList = new ArrayList<>();
+        final var batch = new HashMap<String, Object>();
+        final var batchList = new ArrayList<Map<String, Object>>();
         batch.put("batch", batchList);
         for (final Node node : nodes) {
-            final Map<String, Object> nodeMap = new HashMap<>();
+            final var nodeMap = new HashMap<String, Object>();
             nodeMap.put("id", node.id);
             nodeMap.put("properties", node.properties);
             batchList.add(nodeMap);
         }
-        final Map<String, Long> nodeIdNeo4jIdMap = new HashMap<>();
+        final var nodeIdNeo4jIdMap = new HashMap<String, Long>();
         final Result result = tx.run(
                 "UNWIND $batch as row\nCREATE (n" + labels + ")\nSET n += row.properties\nRETURN row.id, id(n)", batch);
         result.stream().forEach(r -> nodeIdNeo4jIdMap.put(r.get(0).asString(), r.get(1).asLong()));
@@ -426,9 +418,9 @@ public class Neo4jGraphImporter {
     private void importAllEdges(final Session session, final Path inputFile, final LabelOptions labelOptions,
                                 final Map<String, PropertyKey> propertyKeyNameMap, final AtomicLong edgeCount,
                                 final Map<String, Long> nodeIdNeo4jIdMap) {
-        final AtomicReference<Transaction> tx = new AtomicReference<>(session.beginTransaction());
-        final AtomicLong counter = new AtomicLong();
-        final Map<String, List<Edge>> perLabelBatches = new HashMap<>();
+        final var tx = new AtomicReference<>(session.beginTransaction());
+        final var counter = new AtomicLong();
+        final var perLabelBatches = new HashMap<String, List<Edge>>();
         handleAllElementsInXMLWithTag(inputFile, "edge", (reader, startElement) -> {
             final String edgeLabel = modifyEdgeLabel(getElementAttribute(startElement, "label"), labelOptions);
             if (!perLabelBatches.containsKey(edgeLabel))
@@ -471,7 +463,7 @@ public class Neo4jGraphImporter {
 
     private Edge parseEdge(final XMLEventReader reader, final StartElement element,
                            final Map<String, PropertyKey> propertyKeyNameMap, final LabelOptions labelOptions) {
-        Edge result = new Edge();
+        final var result = new Edge();
         result.label = modifyEdgeLabel(getElementAttribute(element, "label"), labelOptions);
         result.source = getElementAttribute(element, "source");
         result.target = getElementAttribute(element, "target");
@@ -524,7 +516,7 @@ public class Neo4jGraphImporter {
     }
 
     private Map<String, Set<String>> getExistingIndices(final Version neo4jVersion, final Session session) {
-        final Map<String, Set<String>> indices = new HashMap<>();
+        final var indices = new HashMap<String, Set<String>>();
         final Transaction tx = session.beginTransaction();
         final List<Record> queryResult = tx.run("CALL db.indexes").list();
         for (final Record index : queryResult) {

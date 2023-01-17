@@ -10,8 +10,8 @@ import de.unibi.agbi.biodwh2.neo4j.importer.model.graphml.PropertyKey;
 import org.apache.commons.lang3.StringUtils;
 import org.neo4j.driver.*;
 import org.neo4j.driver.Record;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import org.apache.logging.log4j.Logger;
+import org.apache.logging.log4j.LogManager;
 import picocli.CommandLine;
 
 import javax.xml.namespace.QName;
@@ -33,7 +33,7 @@ import java.util.jar.Manifest;
 import java.util.stream.Collectors;
 
 public class Neo4jGraphImporter {
-    private static final Logger LOGGER = LoggerFactory.getLogger(Neo4jGraphImporter.class);
+    private static final Logger LOGGER = LogManager.getLogger(Neo4jGraphImporter.class);
     private static final String RELEASE_URL = "https://api.github.com/repos/BioDWH2/Neo4j-GraphML-Importer/releases";
     private static final int BATCH_SIZE = 1000;
     private static final Version NEO4J_4_VERSION = new Version(4, 0);
@@ -158,11 +158,11 @@ public class Neo4jGraphImporter {
     private void importGraphML(final String inputFilePath, final String endpoint, final String username,
                                final String password, final LabelOptions labelOptions,
                                final Map<String, List<String>> indices) {
-        if (!Paths.get(inputFilePath).toFile().exists()) {
+        final Path inputFile = Paths.get(inputFilePath);
+        if (!inputFile.toFile().exists()) {
             LOGGER.error("Input file '" + inputFilePath + "' not found");
             return;
         }
-        final Path inputFile = Paths.get(inputFilePath);
         if (LOGGER.isInfoEnabled())
             LOGGER.info("Parsing property definitions...");
         AtomicLong nodeCount = new AtomicLong();

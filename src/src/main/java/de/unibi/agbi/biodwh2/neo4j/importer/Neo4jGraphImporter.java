@@ -1,5 +1,6 @@
 package de.unibi.agbi.biodwh2.neo4j.importer;
 
+import com.ctc.wstx.exc.WstxEOFException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import de.unibi.agbi.biodwh2.neo4j.importer.model.CmdArgs;
@@ -204,10 +205,12 @@ public class Neo4jGraphImporter {
         }
     }
 
-    private XMLEvent tryNextEvent(final XMLEventReader reader) {
+    private XMLEvent tryNextEvent(final XMLEventReader reader) throws XMLStreamException {
         try {
             return reader.nextEvent();
         } catch (XMLStreamException e) {
+            if (e instanceof WstxEOFException || e.getMessage().contains("Unexpected EOF"))
+                throw e;
             LOGGER.warn("Failed to read XML event", e);
             return null;
         }
@@ -232,7 +235,8 @@ public class Neo4jGraphImporter {
     }
 
     private Node parseNode(final XMLEventReader reader, final StartElement element,
-                           final Map<String, PropertyKey> propertyKeyNameMap, final LabelOptions labelOptions) {
+                           final Map<String, PropertyKey> propertyKeyNameMap,
+                           final LabelOptions labelOptions) throws XMLStreamException {
         Node result = new Node();
         result.id = getElementAttribute(element, "id");
         result.labels = modifyNodeLabels(getElementAttribute(element, "labels"), labelOptions);
@@ -241,9 +245,9 @@ public class Neo4jGraphImporter {
     }
 
     private String modifyNodeLabels(final String labels, final LabelOptions labelOptions) {
-        final boolean prefixUsed = labelOptions.prefix != null && labelOptions.prefix.length() > 0;
-        final boolean suffixUsed = labelOptions.suffix != null && labelOptions.suffix.length() > 0;
-        if (!labelOptions.modifyNodeLabels || labels == null || labels.length() == 0 || (!prefixUsed && !suffixUsed))
+        final boolean prefixUsed = labelOptions.prefix != null && !labelOptions.prefix.isEmpty();
+        final boolean suffixUsed = labelOptions.suffix != null && !labelOptions.suffix.isEmpty();
+        if (!labelOptions.modifyNodeLabels || labels == null || labels.isEmpty() || (!prefixUsed && !suffixUsed))
             return labels;
         final String[] parts = StringUtils.split(labels, ':');
         final var modifiedLabels = new StringBuilder();
@@ -260,7 +264,7 @@ public class Neo4jGraphImporter {
 
     private Map<String, Object> collectNodeOrEdgeProperties(final XMLEventReader reader,
                                                             final Map<String, PropertyKey> propertyKeyNameMap,
-                                                            final String forType) {
+                                                            final String forType) throws XMLStreamException {
         final var properties = new HashMap<String, Object>();
         while (reader.hasNext()) {
             final XMLEvent nextEvent = tryNextEvent(reader);
@@ -391,7 +395,7 @@ public class Neo4jGraphImporter {
         });
         for (final String labels : perLabelBatches.keySet()) {
             final List<Node> batch = perLabelBatches.get(labels);
-            if (batch.size() > 0)
+            if (!batch.isEmpty())
                 nodeIdNeo4jIdMap.putAll(runCreateNodeBatch(tx.get(), batch, labels));
         }
         tx.get().commit();
@@ -441,16 +445,16 @@ public class Neo4jGraphImporter {
         });
         for (final String edgeLabel : perLabelBatches.keySet()) {
             final List<Edge> batch = perLabelBatches.get(edgeLabel);
-            if (batch.size() > 0)
+            if (!batch.isEmpty())
                 runCreateEdgeBatch(tx.get(), batch, edgeLabel, nodeIdNeo4jIdMap);
         }
         tx.get().commit();
     }
 
     private String modifyEdgeLabel(final String label, final LabelOptions labelOptions) {
-        final boolean prefixUsed = labelOptions.prefix != null && labelOptions.prefix.length() > 0;
-        final boolean suffixUsed = labelOptions.suffix != null && labelOptions.suffix.length() > 0;
-        if (!labelOptions.modifyEdgeLabels || label == null || label.length() == 0 || (!prefixUsed && !suffixUsed))
+        final boolean prefixUsed = labelOptions.prefix != null && !labelOptions.prefix.isEmpty();
+        final boolean suffixUsed = labelOptions.suffix != null && !labelOptions.suffix.isEmpty();
+        if (!labelOptions.modifyEdgeLabels || label == null || label.isEmpty() || (!prefixUsed && !suffixUsed))
             return label;
         final StringBuilder modifiedLabels = new StringBuilder();
         if (prefixUsed)
@@ -462,7 +466,8 @@ public class Neo4jGraphImporter {
     }
 
     private Edge parseEdge(final XMLEventReader reader, final StartElement element,
-                           final Map<String, PropertyKey> propertyKeyNameMap, final LabelOptions labelOptions) {
+                           final Map<String, PropertyKey> propertyKeyNameMap,
+                           final LabelOptions labelOptions) throws XMLStreamException {
         final var result = new Edge();
         result.label = modifyEdgeLabel(getElementAttribute(element, "label"), labelOptions);
         result.source = getElementAttribute(element, "source");
@@ -534,7 +539,7 @@ public class Neo4jGraphImporter {
     }
 
     private interface Callback<T, U> {
-        void callback(T t, U u);
+        void callback(T t, U u) throws XMLStreamException;
     }
 
     private static class LabelOptions {

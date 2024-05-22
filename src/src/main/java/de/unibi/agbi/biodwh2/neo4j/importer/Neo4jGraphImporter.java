@@ -24,6 +24,7 @@ import javax.xml.stream.events.StartElement;
 import javax.xml.stream.events.XMLEvent;
 import java.io.FileInputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.net.URL;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -33,6 +34,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 import java.util.jar.Manifest;
 import java.util.stream.Collectors;
+import java.util.zip.GZIPInputStream;
 
 public class Neo4jGraphImporter {
     private static final Logger LOGGER = LogManager.getLogger(Neo4jGraphImporter.class);
@@ -95,7 +97,7 @@ public class Neo4jGraphImporter {
         if (currentVersion == null && mostRecentVersion != null || currentVersion != null && currentVersion.compareTo(
                 mostRecentVersion) < 0) {
             LOGGER.info("=======================================");
-            LOGGER.info("New version " + mostRecentVersion + " of Neo4j-GraphML-Importer is available at:");
+            LOGGER.info("New version {} of Neo4j-GraphML-Importer is available at:", mostRecentVersion);
             LOGGER.info(mostRecentDownloadUrl);
             LOGGER.info("=======================================");
         }
@@ -145,8 +147,9 @@ public class Neo4jGraphImporter {
                         indices.put(label, new ArrayList<>());
                     indices.get(label).add(labelPropertyKeyParts[1]);
                 } else {
-                    LOGGER.warn("Failed to parse index '" + part + "' will be ignored. Ensure the syntax " +
-                                "<label1>.<property1>;<label2>.<property2>;...");
+                    LOGGER.warn(
+                            "Failed to parse index '{}' will be ignored. Ensure the syntax <label1>.<property1>;<label2>.<property2>;...",
+                            part);
                 }
             }
         }
@@ -162,7 +165,7 @@ public class Neo4jGraphImporter {
                                final Map<String, List<String>> indices) {
         final Path inputFile = Paths.get(inputFilePath);
         if (!inputFile.toFile().exists()) {
-            LOGGER.error("Input file '" + inputFilePath + "' not found");
+            LOGGER.error("Input file '{}' not found", inputFilePath);
             return;
         }
         if (LOGGER.isInfoEnabled())
@@ -171,7 +174,7 @@ public class Neo4jGraphImporter {
         final var edgeCount = new AtomicLong();
         handleAllElementsInXMLWithTag(inputFile, "node", (reader, startElement) -> nodeCount.getAndIncrement());
         handleAllElementsInXMLWithTag(inputFile, "edge", (reader, startElement) -> edgeCount.getAndIncrement());
-        LOGGER.info(nodeCount.get() + " nodes, " + edgeCount.get() + " edges");
+        LOGGER.info("{} nodes, {} edges", nodeCount.get(), edgeCount.get());
         final Map<String, PropertyKey> propertyKeyNameMap = new HashMap<>();
         handleAllElementsInXMLWithTag(inputFile, "key", (reader, startElement) -> {
             final PropertyKey property = getPropertyKeyFromElement(startElement);
@@ -190,10 +193,10 @@ public class Neo4jGraphImporter {
 
     private void handleAllElementsInXMLWithTag(final Path inputFilePath, final String tagName,
                                                final Callback<XMLEventReader, StartElement> callback) {
-        try (final var stream = new FileInputStream(inputFilePath.toFile())) {
+        try (final var stream = openInputFile(inputFilePath)) {
             final XMLEventReader reader = XMLInputFactory.newInstance().createXMLEventReader(stream);
             while (reader.hasNext()) {
-                final XMLEvent nextEvent = tryNextEvent(reader);
+                final XMLEvent nextEvent = reader.nextEvent();
                 if (nextEvent != null && nextEvent.isStartElement()) {
                     final StartElement startElement = nextEvent.asStartElement();
                     if (startElement.getName().getLocalPart().equals(tagName))
@@ -205,15 +208,12 @@ public class Neo4jGraphImporter {
         }
     }
 
-    private XMLEvent tryNextEvent(final XMLEventReader reader) throws XMLStreamException {
-        try {
-            return reader.nextEvent();
-        } catch (XMLStreamException e) {
-            if (e instanceof WstxEOFException || e.getMessage().contains("Unexpected EOF"))
-                throw e;
-            LOGGER.warn("Failed to read XML event", e);
-            return null;
+    private InputStream openInputFile(final Path inputFilePath) throws IOException {
+        final var stream = new FileInputStream(inputFilePath.toFile());
+        if (inputFilePath.toString().toLowerCase().endsWith(".gz")) {
+            return new GZIPInputStream(stream);
         }
+        return stream;
     }
 
     private PropertyKey getPropertyKeyFromElement(final StartElement element) {
@@ -268,7 +268,9 @@ public class Neo4jGraphImporter {
         final var properties = new HashMap<String, Object>();
         while (reader.hasNext()) {
             final XMLEvent nextEvent = tryNextEvent(reader);
-            if (nextEvent != null && nextEvent.isStartElement()) {
+            if (nextEvent == null)
+                break;
+            if (nextEvent.isStartElement()) {
                 final StartElement startChildElement = nextEvent.asStartElement();
                 final String propertyKey = getElementAttribute(startChildElement, "key");
                 final String forTypePropertyKey = forType + "|" + propertyKey;
@@ -276,20 +278,31 @@ public class Neo4jGraphImporter {
                     final PropertyKey property = new PropertyKey(propertyKey, forType, propertyKey, "string", null);
                     propertyKeyNameMap.put(forTypePropertyKey, property);
                     if (LOGGER.isInfoEnabled())
-                        LOGGER.warn(forType + " property '" + propertyKey +
-                                    "' wasn't defined, fallback to string property");
+                        LOGGER.warn("{} property '{}' wasn't defined, fallback to string property", forType,
+                                    propertyKey);
                 }
                 final PropertyKey property = propertyKeyNameMap.get(forTypePropertyKey);
                 final String propertyName = property.attributeName();
                 if (!propertyName.equals("labels") && !propertyName.equals("label"))
                     properties.put(propertyName, parsePropertyValue(property, reader));
-            } else if (nextEvent != null && nextEvent.isEndElement()) {
+            } else if (nextEvent.isEndElement()) {
                 final String tagName = nextEvent.asEndElement().getName().getLocalPart();
                 if (tagName.equalsIgnoreCase("node") || tagName.equalsIgnoreCase("edge"))
                     break;
             }
         }
         return properties;
+    }
+
+    private XMLEvent tryNextEvent(final XMLEventReader reader) throws XMLStreamException {
+        try {
+            return reader.nextEvent();
+        } catch (XMLStreamException e) {
+            if (e instanceof WstxEOFException || e.getMessage().contains("Unexpected EOF"))
+                throw e;
+            LOGGER.warn("Failed to read XML event", e);
+            return null;
+        }
     }
 
     private Object parsePropertyValue(final PropertyKey type, final XMLEventReader reader) {
@@ -363,7 +376,7 @@ public class Neo4jGraphImporter {
         final String version = record.get("version").asString();
         final String edition = record.get("edition").asString();
         if (LOGGER.isInfoEnabled())
-            LOGGER.info("Detected Neo4j database version " + version + " (" + edition + ")");
+            LOGGER.info("Detected Neo4j database version {} ({})", version, edition);
         return Version.tryParse(version);
     }
 
@@ -387,7 +400,7 @@ public class Neo4jGraphImporter {
             }
             final long currentCount = counter.incrementAndGet();
             if (currentCount % 5000 == 0)
-                LOGGER.info("Nodes progress: " + currentCount + "/" + nodeCount.get());
+                LOGGER.info("Nodes progress: {}/{}", currentCount, nodeCount.get());
             if (currentCount % TRANSACTION_SIZE == 0) {
                 tx.get().commit();
                 tx.set(session.beginTransaction());
@@ -437,7 +450,7 @@ public class Neo4jGraphImporter {
             }
             final long currentCount = counter.incrementAndGet();
             if (currentCount % 5000 == 0)
-                LOGGER.info("Edges progress: " + currentCount + "/" + edgeCount.get());
+                LOGGER.info("Edges progress: {}/{}", currentCount, edgeCount.get());
             if (currentCount % TRANSACTION_SIZE == 0) {
                 tx.get().commit();
                 tx.set(session.beginTransaction());
@@ -505,15 +518,15 @@ public class Neo4jGraphImporter {
             final List<String> propertyKeys = indices.get(label);
             for (final String propertyKey : propertyKeys) {
                 if (LOGGER.isInfoEnabled())
-                    LOGGER.info("Create index on label '" + label + "' and property '" + propertyKey + "'");
+                    LOGGER.info("Create index on label '{}' and property '{}'", label, propertyKey);
                 if (useNewIndexCreation)
                     tx.run("CREATE INDEX IF NOT EXISTS FOR (t:" + label + ") ON (t." + propertyKey + ")");
                 else {
                     if (!existingIndices.containsKey(label) || !existingIndices.get(label).contains(propertyKey))
                         tx.run("CREATE INDEX ON :" + label + " (" + propertyKey + ")");
                     else if (LOGGER.isInfoEnabled())
-                        LOGGER.info("Skipping index creation on :" + label + " (" + propertyKey +
-                                    ") because a similar index already exists");
+                        LOGGER.info("Skipping index creation on :{} ({}) because a similar index already exists", label,
+                                    propertyKey);
                 }
             }
         }
@@ -529,7 +542,7 @@ public class Neo4jGraphImporter {
             final List<String> labels = index.get(labelsKey).asList(Value::asString);
             final List<String> propertyKeys = index.get("properties").asList(Value::asString);
             if (labels.size() > 1 && LOGGER.isWarnEnabled())
-                LOGGER.warn("Found multiple labels for index " + index + ". Ignoring all but first label.");
+                LOGGER.warn("Found multiple labels for index {}. Ignoring all but first label.", index);
             if (!indices.containsKey(labels.get(0)))
                 indices.put(labels.get(0), new HashSet<>());
             indices.get(labels.get(0)).addAll(propertyKeys);

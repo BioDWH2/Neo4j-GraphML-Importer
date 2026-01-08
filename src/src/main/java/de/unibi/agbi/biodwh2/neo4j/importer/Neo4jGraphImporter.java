@@ -1,8 +1,8 @@
 package de.unibi.agbi.biodwh2.neo4j.importer;
 
 import com.ctc.wstx.exc.WstxEOFException;
-import com.fasterxml.jackson.core.type.TypeReference;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.core.type.TypeReference;
+import tools.jackson.databind.ObjectMapper;
 import de.unibi.agbi.biodwh2.neo4j.importer.model.CmdArgs;
 import de.unibi.agbi.biodwh2.neo4j.importer.model.GithubAsset;
 import de.unibi.agbi.biodwh2.neo4j.importer.model.GithubRelease;
@@ -75,9 +75,8 @@ public class Neo4jGraphImporter {
         Version mostRecentVersion = null;
         String mostRecentDownloadUrl = null;
         final ObjectMapper mapper = new ObjectMapper();
-        try {
-            final var releaseUrl = new URL(RELEASE_URL);
-            final List<GithubRelease> releases = mapper.readValue(releaseUrl, new TypeReference<>() {
+        try (final var inputStream = new URL(RELEASE_URL).openStream()) {
+            final List<GithubRelease> releases = mapper.readValue(inputStream, new TypeReference<>() {
             });
             for (final GithubRelease release : releases) {
                 final Version version = Version.tryParse(release.tagName.replace("v", ""));

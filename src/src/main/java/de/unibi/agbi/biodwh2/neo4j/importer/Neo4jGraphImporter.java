@@ -368,15 +368,23 @@ public class Neo4jGraphImporter {
 
     private Version getNeo4jKernelVersion(final Session session) {
         final Transaction tx = session.beginTransaction();
-        final Result result = tx.run(
-                "call dbms.components() yield versions, edition unwind versions as version return version, edition");
-        final Record record = result.single();
+        final Result result = tx.run("call dbms.components() yield versions, edition");
+        // New neo4j
+        // ["2025.11.4"]	"community"
+        // ["5", "25"]	""
+        // Old neo4j
+        // ["3.5.12"]	"community"
+        final List<Record> records = result.list();
         tx.commit();
-        final String version = record.get("version").asString();
-        final String edition = record.get("edition").asString();
-        if (LOGGER.isInfoEnabled())
-            LOGGER.info("Detected Neo4j database version {} ({})", version, edition);
-        return Version.tryParse(version);
+        for (final var record : records) {
+            final var versionList = record.get("versions").asList(Value::asString);
+            final String version = String.join(".", versionList);
+            final String edition = record.get("edition").asString();
+            if (LOGGER.isInfoEnabled())
+                LOGGER.info("Detected Neo4j database version {} ({})", version, edition);
+            return Version.tryParse(version);
+        }
+        return new Version(0, 0);
     }
 
     private Map<String, Long> importAllNodes(final Session session, final Path inputFile,

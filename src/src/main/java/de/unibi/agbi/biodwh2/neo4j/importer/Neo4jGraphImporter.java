@@ -244,19 +244,21 @@ public class Neo4jGraphImporter {
     }
 
     private String modifyNodeLabels(final String labels, final LabelOptions labelOptions) {
+        if (labels == null || labels.isEmpty()) {
+            return labels;
+        }
         final boolean prefixUsed = labelOptions.prefix != null && !labelOptions.prefix.isEmpty();
         final boolean suffixUsed = labelOptions.suffix != null && !labelOptions.suffix.isEmpty();
-        if (!labelOptions.modifyNodeLabels || labels == null || labels.isEmpty() || (!prefixUsed && !suffixUsed))
-            return labels;
         final String[] parts = StringUtils.split(labels, ':');
         final var modifiedLabels = new StringBuilder();
         for (final String part : parts) {
-            modifiedLabels.append(':');
-            if (prefixUsed)
+            modifiedLabels.append(":`");
+            if (labelOptions.modifyNodeLabels && prefixUsed)
                 modifiedLabels.append(labelOptions.prefix);
             modifiedLabels.append(part);
-            if (suffixUsed)
+            if (labelOptions.modifyNodeLabels && suffixUsed)
                 modifiedLabels.append(labelOptions.suffix);
+            modifiedLabels.append("`");
         }
         return modifiedLabels.toString();
     }
@@ -472,16 +474,19 @@ public class Neo4jGraphImporter {
     }
 
     private String modifyEdgeLabel(final String label, final LabelOptions labelOptions) {
+        if (label == null || label.isEmpty()) {
+            return label;
+        }
         final boolean prefixUsed = labelOptions.prefix != null && !labelOptions.prefix.isEmpty();
         final boolean suffixUsed = labelOptions.suffix != null && !labelOptions.suffix.isEmpty();
-        if (!labelOptions.modifyEdgeLabels || label == null || label.isEmpty() || (!prefixUsed && !suffixUsed))
-            return label;
         final StringBuilder modifiedLabels = new StringBuilder();
-        if (prefixUsed)
+        modifiedLabels.append('`');
+        if (labelOptions.modifyEdgeLabels && prefixUsed)
             modifiedLabels.append(labelOptions.prefix);
         modifiedLabels.append(label);
-        if (suffixUsed)
+        if (labelOptions.modifyEdgeLabels && suffixUsed)
             modifiedLabels.append(labelOptions.suffix);
+        modifiedLabels.append('`');
         return modifiedLabels.toString();
     }
 
